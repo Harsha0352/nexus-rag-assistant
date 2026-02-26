@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat with PDF using Voice RAG</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            display: flex;
+            gap: 30px;
+            max-width: 1200px;
+            width: 100%;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .sidebar {
+            flex: 0 0 350px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+        }
+
+        .sidebar h2 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .sidebar p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .upload-zone {
+            background: white;
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            padding: 30px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-zone:hover {
+            border-color: #764ba2;
+            background: #f8f9ff;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+        }
+
+        .upload-zone.dragover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .upload-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+
+        .upload-zone h3 {
+            color: #333;
+            font-size: 16px;
+            margin-bottom: 5px;
+        }
+
+        .upload-zone p {
+            color: #999;
+            font-size: 12px;
+            margin-bottom: 15px;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .browse-btn, .submit-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .browse-btn:hover, .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .browse-btn:active, .submit-btn:active {
+            transform: translateY(0);
+        }
+
+        .submit-btn {
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .file-list {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .file-list h4 {
+            color: #333;
+            font-size: 12px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            background: #f5f7fa;
+            border-radius: 5px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .file-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .remove-file {
+            background: none;
+            border: none;
+            color: #e74c3c;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0;
+        }
+
+        .remove-file:hover {
+            color: #c0392b;
+        }
+
+        .main {
+            flex: 1;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .main h1 {
+            color: #333;
+            font-size: 32px;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .main > p {
+            color: #999;
+            font-size: 16px;
+            margin-bottom: 30px;
+        }
+
+        .chat-container {
+            flex: 1;
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            overflow-y: auto;
+            min-height: 300px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            display: flex;
+            gap: 10px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 15px;
+            border-radius: 10px;
+            line-height: 1.5;
+            font-size: 14px;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 2px;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 2px;
+        }
+
+        .message-icon {
+            font-size: 20px;
+            align-self: flex-end;
+            margin-bottom: 5px;
+        }
+
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+
+        .input-area input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .input-area button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .input-area button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .input-area button:active {
+            transform: translateY(0);
+        }
+
+        .input-area button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status-message {
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+
+        .status-message.loading {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .status-message.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .status-message.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(25, 118, 210, 0.3);
+            border-radius: 50%;
+            border-top-color: #1976d2;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #999;
+            text-align: center;
+        }
+
+        .empty-state-icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+        }
+
+        .mode-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            background: #f0f0f0;
+            padding: 8px;
+            border-radius: 8px;
+            width: fit-content;
+        }
+
+        .mode-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            transition: all 0.3s ease;
+            background: transparent;
+            color: #666;
+        }
+
+        .mode-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .voice-icon {
+            font-size: 20px;
+        }
+
+        .mic-button {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .mic-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .mic-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .mic-button.recording {
+            background: #f44336;
+            animation: pulse 0.6s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(244, 67, 54, 0); }
+        }
+
+        .voice-transcript {
+            background: #e3f2fd;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            font-size: 13px;
+            color: #1976d2;
+            font-style: italic;
+        }
+
+        .playing-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #4caf50;
+            border-radius: 50%;
+            animation: blink 0.6s infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes blink {
+            0%, 49%, 100% { opacity: 1; }
+            50%, 99% { opacity: 0.3; }
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                flex: none;
+            }
+
+            .main h1 {
+                font-size: 24px;
+            }
+
+            .message-content {
+                max-width: 90%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div>
+                <h2>📁 Menu</h2>
+                <p>Upload your PDF files and click on the Submit & Process button</p>
+            </div>
+
+            <div class="upload-zone" id="uploadZone">
+                <div class="upload-icon">📄</div>
+                <h3>Drag and drop files here</h3>
+                <p>Limit 200MB per file</p>
+                <button class="browse-btn" type="button" onclick="document.getElementById('fileInput').click()">
+                    Browse Files
+                </button>
+            </div>
+
+            <input type="file" id="fileInput" multiple accept=".pdf" />
+
+            <div class="file-list" id="fileList" style="display: none;">
+                <h4>Selected Files</h4>
+                <div id="filesContainer"></div>
+            </div>
+
+            <button class="submit-btn" id="submitBtn" onclick="uploadFiles()" disabled>
+                Submit & Process
+            </button>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main">
+            <h1>💬 Chat with Multiple PDF</h1>
+            <p>Ask questions from your PDF files</p>
+
+            <div class="mode-toggle">
+                <button class="mode-btn active" id="textModeBtn" onclick="switchMode('text')">
+                    📝 Text Mode
+                </button>
+                <button class="mode-btn" id="voiceModeBtn" onclick="switchMode('voice')">
+                    🎤 Voice Mode
+                </button>
+            </div>
+
+            <div class="chat-container" id="chatContainer">
+                <div class="empty-state">
+                    <div>
+                        <div class="empty-state-icon">📚</div>
+                        <p>Upload PDF files to get started</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="voiceTranscript" class="voice-transcript" style="display: none;"></div>
+
+            <div class="input-area">
+                <input 
+                    type="text" 
+                    id="questionInput" 
+                    placeholder="Ask a question about your PDFs..." 
+                    disabled
+                    onkeypress="if(event.key === 'Enter') askQuestion()"
+                    style="display: block;"
+                />
+                <button id="askBtn" onclick="askQuestion()" disabled>Send</button>
+                <button 
+                    id="micBtn" 
+                    class="mic-button" 
+                    onclick="toggleMicrophone()" 
+                    disabled 
+                    style="display: none;"
+                >
+                    🎤 Start Listening
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFiles = [];
+        let isProcessed = false;
+        let currentMode = 'text';
+        let isListening = false;
+        let recognition = null;
+        let voiceTranscript = '';
+
+        // Initialize Speech Recognition
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                voiceTranscript = '';
+                updateMicButton();
+            };
+
+            recognition.onresult = (event) => {
+                let interimTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        voiceTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                displayVoiceTranscript(voiceTranscript + interimTranscript);
+            };
+
+            recognition.onerror = (event) => {
+                addStatusMessage('error', `🎤 Voice Error: ${event.error}`);
+                isListening = false;
+                updateMicButton();
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                updateMicButton();
+                if (voiceTranscript.trim()) {
+                    questionInput.value = voiceTranscript.trim();
+                    setTimeout(() => askQuestion(), 500);
+                }
+            };
+        }
+
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const filesContainer = document.getElementById('filesContainer');
+        const submitBtn = document.getElementById('submitBtn');
+        const chatContainer = document.getElementById('chatContainer');
+        const questionInput = document.getElementById('questionInput');
+        const askBtn = document.getElementById('askBtn');
+        const micBtn = document.getElementById('micBtn');
+        const textModeBtn = document.getElementById('textModeBtn');
+        const voiceModeBtn = document.getElementById('voiceModeBtn');
+        const voiceTranscriptDiv = document.getElementById('voiceTranscript');
+
+        // Drag and drop handlers
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            selectedFiles = Array.from(files);
+            updateFileList();
+            submitBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function updateFileList() {
+            if (selectedFiles.length === 0) {
+                fileList.style.display = 'none';
+                return;
+            }
+
+            fileList.style.display = 'block';
+            filesContainer.innerHTML = selectedFiles.map((file, index) => `
+                <div class="file-item">
+                    <span>${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)</span>
+                    <button class="remove-file" type="button" onclick="removeFile(${index})">×</button>
+                </div>
+            `).join('');
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+            submitBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function switchMode(mode) {
+            currentMode = mode;
+            if (isListening) toggleMicrophone();
+            
+            if (mode === 'text') {
+                textModeBtn.classList.add('active');
+                voiceModeBtn.classList.remove('active');
+                questionInput.style.display = 'block';
+                askBtn.style.display = 'block';
+                micBtn.style.display = 'none';
+                voiceTranscriptDiv.style.display = 'none';
+            } else {
+                textModeBtn.classList.remove('active');
+                voiceModeBtn.classList.add('active');
+                questionInput.style.display = 'none';
+                askBtn.style.display = 'none';
+                micBtn.style.display = 'flex';
+                if (!recognition) {
+                    addStatusMessage('error', '🎤 Speech Recognition not supported in your browser');
+                }
+            }
+        }
+
+        function toggleMicrophone() {
+            if (!recognition) {
+                addStatusMessage('error', '🎤 Speech Recognition not supported');
+                return;
+            }
+
+            if (isListening) {
+                recognition.stop();
+            } else {
+                voiceTranscript = '';
+                displayVoiceTranscript('');
+                recognition.start();
+            }
+        }
+
+        function updateMicButton() {
+            if (isListening) {
+                micBtn.textContent = '⏹️ Stop Listening';
+                micBtn.classList.add('recording');
+            } else {
+                micBtn.textContent = '🎤 Start Listening';
+                micBtn.classList.remove('recording');
+            }
+        }
+
+        function displayVoiceTranscript(text) {
+            if (text.trim()) {
+                voiceTranscriptDiv.textContent = `"${text}"`;
+                voiceTranscriptDiv.style.display = 'block';
+            } else {
+                voiceTranscriptDiv.style.display = 'none';
+            }
+        }
+
+        async function uploadFiles() {
+            if (selectedFiles.length === 0) return;
+
+            submitBtn.disabled = true;
+            const formData = new FormData();
+
+            selectedFiles.forEach(file => formData.append('files', file));
+
+            addStatusMessage('uploading', `Uploading and processing ${selectedFiles.length} file(s)...`);
+
+            try {
+                const response = await fetch('/upload-pdf/', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Upload failed: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                addStatusMessage('success', `✓ ${data.message}`);
+                isProcessed = true;
+                questionInput.disabled = false;
+                micBtn.disabled = false;
+                askBtn.disabled = false;
+                selectedFiles = [];
+                updateFileList();
+            } catch (error) {
+                addStatusMessage('error', `✗ Error: ${error.message}`);
+                submitBtn.disabled = false;
+            }
+        }
+
+        async function askQuestion() {
+            if (!isProcessed || !questionInput.value.trim()) return;
+
+            const question = questionInput.value.trim();
+            addMessage('user', question);
+            questionInput.value = '';
+            askBtn.disabled = true;
+            micBtn.disabled = true;
+
+            addStatusMessage('loading', '<span class="loading-spinner"></span>Processing your question...');
+
+            try {
+                const formData = new FormData();
+                formData.append('question', question);
+
+                const response = await fetch('/ask/', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    let errMsg = response.statusText;
+                    try {
+                        const errJson = await response.json();
+                        if (errJson && errJson.detail) {
+                            errMsg = errJson.detail;
+                        }
+                    } catch {}
+                    throw new Error(`Request failed: ${errMsg}`);
+                }
+
+                const data = await response.json();
+                removeStatusMessage();
+                const answer = data.answer;
+                addMessage('assistant', answer);
+                
+                // Speak the response if in voice mode
+                if (currentMode === 'voice') {
+                    speakResponse(answer);
+                }
+            } catch (error) {
+                removeStatusMessage();
+                addStatusMessage('error', `✗ Error: ${error.message}`);
+            }
+
+            askBtn.disabled = false;
+            micBtn.disabled = false;
+        }
+
+        function speakResponse(text) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1;
+            utterance.pitch = 1;
+            utterance.volume = 1;
+            utterance.lang = 'en-US';
+
+            utterance.onstart = () => {
+                addStatusMessage('loading', '<span class="playing-indicator"></span>Speaking response...');
+            };
+
+            utterance.onend = () => {
+                removeStatusMessage();
+            };
+
+            utterance.onerror = (event) => {
+                removeStatusMessage();
+                addStatusMessage('error', `🔊 Speech synthesis error: ${event.error}`);
+            };
+
+            speechSynthesis.speak(utterance);
+        }
+
+        function addMessage(role, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = content;
+
+            const iconDiv = document.createElement('div');
+            iconDiv.className = 'message-icon';
+            iconDiv.textContent = role === 'user' ? '👤' : '🤖';
+
+            if (role === 'user') {
+                messageDiv.appendChild(contentDiv);
+                messageDiv.appendChild(iconDiv);
+            } else {
+                messageDiv.appendChild(iconDiv);
+                messageDiv.appendChild(contentDiv);
+            }
+
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addStatusMessage(type, message) {
+            removeStatusMessage();
+            const statusDiv = document.createElement('div');
+            statusDiv.className = `status-message ${type}`;
+            statusDiv.innerHTML = message;
+            statusDiv.id = 'statusMessage';
+            chatContainer.appendChild(statusDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function removeStatusMessage() {
+            const statusMsg = document.getElementById('statusMessage');
+            if (statusMsg) statusMsg.remove();
+        }
+
+        // Clear empty state when first message is added
+        const originalAppendChild = chatContainer.appendChild;
+        chatContainer.appendChild = function(child) {
+            const emptyState = this.querySelector('.empty-state');
+            if (emptyState && !child.querySelector?.('.empty-state')) {
+                emptyState.remove();
+            }
+            return originalAppendChild.call(this, child);
+        };
+    </script>
+</body>
+</html>
