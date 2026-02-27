@@ -42,7 +42,7 @@ app.add_middleware(
 )
 
 # -------- SERVE FRONTEND -------- #
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, methods=["GET", "HEAD"])
 async def get_frontend():
     """Serve the frontend HTML file."""
     try:
