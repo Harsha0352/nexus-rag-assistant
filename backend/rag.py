@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
+from langchain_huggingface import HuggingFaceEndpointEmbeddings, HuggingFaceEndpoint
 from langchain_community.vectorstores import FAISS
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -14,8 +14,9 @@ HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HUGGINGFACEHUB_API_TOK
 
 def get_rag_chain():
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = HuggingFaceEndpointEmbeddings(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        huggingfacehub_api_token=HF_TOKEN,
     )
 
     db = FAISS.load_local(

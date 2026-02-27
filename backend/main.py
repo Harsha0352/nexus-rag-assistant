@@ -11,7 +11,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import (
-    HuggingFaceEmbeddings,
+    HuggingFaceEndpointEmbeddings,
     HuggingFaceEndpoint,
     ChatHuggingFace,
 )
@@ -71,8 +71,9 @@ class QuestionRequest(BaseModel):
 def load_models():
     global llm, embeddings, vectorstore, retriever, rag_chain
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = HuggingFaceEndpointEmbeddings(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        huggingfacehub_api_token=HF_TOKEN,
     )
 
     llm_endpoint = HuggingFaceEndpoint(
