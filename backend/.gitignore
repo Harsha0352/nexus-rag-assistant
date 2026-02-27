@@ -1,0 +1,21 @@
+# Environment variables (NEVER commit secrets)
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# FAISS index (large binary files)
+faiss_index/
+
+# Temp files
+temp_*.pdf
+
+# IDE
+.vscode/
+.idea/

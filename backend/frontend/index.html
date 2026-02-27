@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat with PDF using Voice RAG</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --nebula-deep: #020617;
+            --nebula-purple: #1e1b4b;
+            --nebula-aurora: #4f46e5;
+            --accent-aurora: #10b981;
+            --accent-violet: #8b5cf6;
+            --text-pure: #ffffff;
+            --text-dim: #94a3b8;
+            --glass-bg: rgba(15, 23, 42, 0.6);
+            --glass-border: rgba(255, 255, 255, 0.15);
+            --card-shadow: 0 0 30px rgba(0, 0, 0, 0.5), 0 0 10px rgba(79, 70, 229, 0.2);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: radial-gradient(circle at 50% -20%, var(--nebula-purple), var(--nebula-deep) 70%);
+            color: var(--text-pure);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        /* Top Bar Branding */
+        .top-bar {
+            width: 100%;
+            padding: 20px 40px;
+            background: rgba(15, 23, 42, 0.4);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .brand h1 {
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            background: linear-gradient(to right, #fff, var(--accent-aurora));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Hero Section */
+        .hero {
+            text-align: center;
+            padding: 60px 20px 40px;
+        }
+
+        .hero h2 {
+            font-size: 42px;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .hero p {
+            color: var(--text-dim);
+            font-size: 18px;
+        }
+
+        /* Layout Grid */
+        .grid-layout {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+            max-width: 1200px;
+            margin: 0 auto 60px;
+            width: 100%;
+            padding: 0 20px;
+        }
+
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--glass-border);
+            border-radius: 28px;
+            padding: 30px;
+            box-shadow: var(--card-shadow);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .glass-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 0 40px rgba(79, 70, 229, 0.3);
+        }
+
+        /* Synchronization Portal */
+        .portal-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .portal-header h3 {
+            font-size: 18px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-aurora);
+        }
+
+        .upload-zone {
+            border: 2px dashed rgba(16, 185, 129, 0.3);
+            border-radius: 20px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(16, 185, 129, 0.03);
+            margin-bottom: 20px;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--accent-aurora);
+            background: rgba(16, 185, 129, 0.08);
+        }
+
+        .upload-icon {
+            font-size: 50px;
+            margin-bottom: 15px;
+            display: block;
+        }
+
+        .btn-modern {
+            padding: 12px 24px;
+            border-radius: 14px;
+            border: none;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 13px;
+        }
+
+        .btn-aurora {
+            background: linear-gradient(135deg, var(--accent-aurora), var(--nebula-aurora));
+            color: white;
+            width: 100%;
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
+        }
+
+        .btn-aurora:hover:not(:disabled) {
+            transform: scale(1.02);
+            filter: brightness(1.1);
+            box-shadow: 0 0 25px rgba(16, 185, 129, 0.5);
+        }
+
+        .btn-aurora:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            filter: grayscale(1);
+        }
+
+        .file-list {
+            margin-top: 20px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            margin-bottom: 10px;
+            font-size: 13px;
+            border: 1px solid var(--glass-border);
+        }
+
+        /* Neural Terminal */
+        .terminal-container {
+            display: flex;
+            flex-direction: column;
+            height: 600px;
+        }
+
+        .chat-container {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            scrollbar-width: thin;
+            scrollbar-color: var(--glass-border) transparent;
+        }
+
+        .chat-container::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        .chat-container::-webkit-scrollbar-thumb {
+            background: var(--glass-border);
+            border-radius: 10px;
+        }
+
+        .message {
+            display: flex;
+            max-width: 80%;
+            gap: 12px;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+
+        .message-content {
+            padding: 16px 20px;
+            border-radius: 22px;
+            font-size: 15px;
+            line-height: 1.6;
+            word-wrap: break-word;
+        }
+
+        .message.user .message-content {
+            background: var(--accent-aurora);
+            color: white;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .message-content {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--glass-border);
+            border-bottom-left-radius: 4px;
+            color: var(--text-pure);
+        }
+
+        .input-area {
+            background: rgba(0, 0, 0, 0.4);
+            border-top: 1px solid var(--glass-border);
+            padding: 20px;
+            border-radius: 0 0 28px 28px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .modern-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--glass-border);
+            padding: 14px 20px;
+            border-radius: 14px;
+            color: white;
+            font-family: inherit;
+            font-size: 15px;
+            transition: all 0.3s ease;
+        }
+
+        .modern-input:focus {
+            outline: none;
+            border-color: var(--accent-aurora);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 14px;
+            border: none;
+            background: var(--accent-aurora);
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-icon:hover {
+            transform: scale(1.05);
+            filter: brightness(1.2);
+        }
+
+        /* Mode Toggles */
+        .mode-container {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 5px;
+            border-radius: 12px;
+            display: flex;
+            gap: 5px;
+        }
+
+        .mode-btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            transition: all 0.3s ease;
+            background: transparent;
+            color: var(--text-dim);
+        }
+
+        .mode-btn.active {
+            background: var(--accent-aurora);
+            color: white;
+        }
+
+        /* Voice Refinement */
+        .mic-btn-main {
+            background: var(--accent-aurora);
+            padding: 14px 30px;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .mic-btn-main.recording {
+            background: #ef4444;
+            animation: pulse-red 1.5s infinite;
+        }
+
+        .status-message {
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid var(--accent-aurora);
+            padding: 12px 20px;
+            border-radius: 14px;
+            color: var(--accent-aurora);
+            font-size: 14px;
+            margin-bottom: 15px;
+            backdrop-filter: blur(5px);
+        }
+
+        .voice-transcript {
+            font-style: italic;
+            color: var(--accent-aurora);
+            margin-bottom: 10px;
+            font-size: 14px;
+            padding: 0 20px;
+        }
+
+        @media (max-width: 1000px) {
+            .grid-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .terminal-container {
+                height: 500px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="top-bar">
+        <div class="brand">
+            <h1>NEXUS.AI</h1>
+        </div>
+        <div class="mode-container">
+            <button class="mode-btn active" id="textModeBtn" onclick="switchMode('text')">TERMINAL</button>
+            <button class="mode-btn" id="voiceModeBtn" onclick="switchMode('voice')">NEURAL LINK</button>
+        </div>
+    </div>
+
+    <div class="hero">
+        <h2>Nebula Intelligence</h2>
+        <p>Quantum-enhanced retrieval augmented generation.</p>
+    </div>
+
+    <div class="grid-layout">
+        <!-- Intelligence Portal -->
+        <div class="glass-card">
+            <div class="portal-header">
+                <span>🛸</span>
+                <h3>Intelligence Portal</h3>
+            </div>
+            <p style="color: var(--text-dim); font-size: 14px; margin-bottom: 20px;">Synchronize PDF neural maps to
+                initialize your specialized knowledge base.</p>
+
+            <div class="upload-zone" id="uploadZone">
+                <span class="upload-icon">💎</span>
+                <h4 style="margin-bottom: 5px;">Data Ingestion</h4>
+                <p style="font-size: 12px; color: var(--text-dim);">Drop PDF clusters here</p>
+                <button class="btn-modern btn-aurora" style="margin-top: 15px; width: auto;"
+                    onclick="document.getElementById('fileInput').click()">
+                    Sync Files
+                </button>
+            </div>
+
+            <input type="file" id="fileInput" multiple accept=".pdf" style="display: none;" />
+
+            <div class="file-list" id="fileList" style="display: none;">
+                <h4 style="font-size: 12px; margin-bottom: 10px; color: var(--accent-aurora);">SYNC QUEUE</h4>
+                <div id="filesContainer"></div>
+            </div>
+
+            <button class="btn-modern btn-aurora" id="submitBtn" onclick="uploadFiles()" disabled
+                style="margin-top: 20px;">
+                INITIATE SYNCHRONIZATION
+            </button>
+        </div>
+
+        <!-- Neural Terminal -->
+        <div class="glass-card terminal-container">
+            <div class="portal-header" style="margin-bottom: 10px;">
+                <span>📡</span>
+                <h3>Neural Terminal</h3>
+            </div>
+
+            <div class="chat-container" id="chatContainer">
+                <div class="empty-state" style="text-align: center; margin-top: 100px; color: var(--text-dim);">
+                    <div style="font-size: 60px; margin-bottom: 20px;">🌌</div>
+                    <p>Terminal offline. Initialize synchronization to begin link.</p>
+                </div>
+            </div>
+
+            <div id="voiceTranscript" class="voice-transcript" style="display: none;"></div>
+
+            <div class="input-area">
+                <input type="text" id="questionInput" class="modern-input" placeholder="Query knowledge base..."
+                    disabled onkeypress="if(event.key === 'Enter') askQuestion()" />
+
+                <button id="askBtn" class="btn-icon" onclick="askQuestion()" disabled title="Send Query">
+                    ➤
+                </button>
+
+                <button id="micBtn" class="btn-modern btn-aurora mic-btn-main" onclick="toggleMicrophone()" disabled
+                    style="display: none;">
+                    🎤 NEURAL LINK
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFiles = [];
+        let isProcessed = false;
+        let currentMode = 'text';
+        let isListening = false;
+        let recognition = null;
+        let voiceTranscript = '';
+
+        // Initialize Speech Recognition
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                voiceTranscript = '';
+                updateMicButton();
+            };
+
+            recognition.onresult = (event) => {
+                let interimTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        voiceTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+                displayVoiceTranscript(voiceTranscript + interimTranscript);
+            };
+
+            recognition.onerror = (event) => {
+                addStatusMessage('error', `🎤 Voice Error: ${event.error}`);
+                isListening = false;
+                updateMicButton();
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                updateMicButton();
+                if (voiceTranscript.trim()) {
+                    questionInput.value = voiceTranscript.trim();
+                    setTimeout(() => askQuestion(), 500);
+                }
+            };
+        }
+
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const filesContainer = document.getElementById('filesContainer');
+        const submitBtn = document.getElementById('submitBtn');
+        const chatContainer = document.getElementById('chatContainer');
+        const questionInput = document.getElementById('questionInput');
+        const askBtn = document.getElementById('askBtn');
+        const micBtn = document.getElementById('micBtn');
+        const textModeBtn = document.getElementById('textModeBtn');
+        const voiceModeBtn = document.getElementById('voiceModeBtn');
+        const voiceTranscriptDiv = document.getElementById('voiceTranscript');
+
+        // Drag and drop handlers
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            selectedFiles = Array.from(files);
+            updateFileList();
+            submitBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function updateFileList() {
+            if (selectedFiles.length === 0) {
+                fileList.style.display = 'none';
+                return;
+            }
+
+            fileList.style.display = 'block';
+            filesContainer.innerHTML = selectedFiles.map((file, index) => `
+                <div class="file-item">
+                    <span>${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)</span>
+                    <button class="remove-file" type="button" onclick="removeFile(${index})">×</button>
+                </div>
+            `).join('');
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+            submitBtn.disabled = selectedFiles.length === 0;
+        }
+
+        function switchMode(mode) {
+            currentMode = mode;
+            if (isListening) toggleMicrophone();
+
+            if (mode === 'text') {
+                textModeBtn.classList.add('active');
+                voiceModeBtn.classList.remove('active');
+                questionInput.style.display = 'block';
+                askBtn.style.display = 'block';
+                micBtn.style.display = 'none';
+                voiceTranscriptDiv.style.display = 'none';
+            } else {
+                textModeBtn.classList.remove('active');
+                voiceModeBtn.classList.add('active');
+                questionInput.style.display = 'none';
+                askBtn.style.display = 'none';
+                micBtn.style.display = 'flex';
+                if (!recognition) {
+                    addStatusMessage('error', '🎤 Speech Recognition not supported in your browser');
+                }
+            }
+        }
+
+        function toggleMicrophone() {
+            if (!recognition) {
+                addStatusMessage('error', '🎤 Speech Recognition not supported');
+                return;
+            }
+
+            if (isListening) {
+                recognition.stop();
+            } else {
+                voiceTranscript = '';
+                displayVoiceTranscript('');
+                recognition.start();
+            }
+        }
+
+        function updateMicButton() {
+            if (isListening) {
+                micBtn.textContent = '⏹️ Stop Listening';
+                micBtn.classList.add('recording');
+            } else {
+                micBtn.textContent = '🎤 Start Listening';
+                micBtn.classList.remove('recording');
+            }
+        }
+
+        function displayVoiceTranscript(text) {
+            if (text.trim()) {
+                voiceTranscriptDiv.textContent = `"${text}"`;
+                voiceTranscriptDiv.style.display = 'block';
+            } else {
+                voiceTranscriptDiv.style.display = 'none';
+            }
+        }
+
+        async function uploadFiles() {
+            if (selectedFiles.length === 0) return;
+
+            submitBtn.disabled = true;
+            const formData = new FormData();
+
+            selectedFiles.forEach(file => formData.append('files', file));
+
+            addStatusMessage('uploading', `Uploading and processing ${selectedFiles.length} file(s)...`);
+
+            try {
+                const response = await fetch('/upload-pdf/', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Upload failed: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                addStatusMessage('success', `✓ ${data.message}`);
+                isProcessed = true;
+                questionInput.disabled = false;
+                micBtn.disabled = false;
+                askBtn.disabled = false;
+                selectedFiles = [];
+                updateFileList();
+            } catch (error) {
+                addStatusMessage('error', `✗ Error: ${error.message}`);
+                submitBtn.disabled = false;
+            }
+        }
+
+        async function askQuestion() {
+            if (!isProcessed || !questionInput.value.trim()) return;
+
+            const question = questionInput.value.trim();
+            addMessage('user', question);
+            questionInput.value = '';
+            askBtn.disabled = true;
+            micBtn.disabled = true;
+
+            addStatusMessage('loading', '<span class="loading-spinner"></span>Processing your question...');
+
+            try {
+                const formData = new FormData();
+                formData.append('question', question);
+
+                const response = await fetch('/ask/', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    let errMsg = response.statusText;
+                    try {
+                        const errJson = await response.json();
+                        if (errJson && errJson.detail) {
+                            errMsg = errJson.detail;
+                        }
+                    } catch { }
+                    throw new Error(`Request failed: ${errMsg}`);
+                }
+
+                const data = await response.json();
+                removeStatusMessage();
+                const answer = data.answer;
+                addMessage('assistant', answer);
+
+                // Speak the response if in voice mode
+                if (currentMode === 'voice') {
+                    speakResponse(answer);
+                }
+            } catch (error) {
+                removeStatusMessage();
+                addStatusMessage('error', `✗ Error: ${error.message}`);
+            }
+
+            askBtn.disabled = false;
+            micBtn.disabled = false;
+        }
+
+        function speakResponse(text) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1;
+            utterance.pitch = 1;
+            utterance.volume = 1;
+            utterance.lang = 'en-US';
+
+            utterance.onstart = () => {
+                addStatusMessage('loading', '<span class="playing-indicator"></span>Speaking response...');
+            };
+
+            utterance.onend = () => {
+                removeStatusMessage();
+            };
+
+            utterance.onerror = (event) => {
+                removeStatusMessage();
+                addStatusMessage('error', `🔊 Speech synthesis error: ${event.error}`);
+            };
+
+            speechSynthesis.speak(utterance);
+        }
+
+        function addMessage(role, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = content;
+
+            const iconDiv = document.createElement('div');
+            iconDiv.className = 'message-icon';
+            iconDiv.textContent = role === 'user' ? '👤' : '🤖';
+
+            if (role === 'user') {
+                messageDiv.appendChild(contentDiv);
+                messageDiv.appendChild(iconDiv);
+            } else {
+                messageDiv.appendChild(iconDiv);
+                messageDiv.appendChild(contentDiv);
+            }
+
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addStatusMessage(type, message) {
+            removeStatusMessage();
+            const statusDiv = document.createElement('div');
+            statusDiv.className = `status-message ${type}`;
+            statusDiv.innerHTML = message;
+            statusDiv.id = 'statusMessage';
+            chatContainer.appendChild(statusDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function removeStatusMessage() {
+            const statusMsg = document.getElementById('statusMessage');
+            if (statusMsg) statusMsg.remove();
+        }
+
+        // Clear empty state when first message is added
+        const originalAppendChild = chatContainer.appendChild;
+        chatContainer.appendChild = function (child) {
+            const emptyState = this.querySelector('.empty-state');
+            if (emptyState && !child.querySelector?.('.empty-state')) {
+                emptyState.remove();
+            }
+            return originalAppendChild.call(this, child);
+        };
+    </script>
+</body>
+
+</html>
