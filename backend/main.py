@@ -218,7 +218,7 @@ def process_pdf_background(temp_paths: List[str]):
                         vectorstore = FAISS.from_documents(chunks, embeddings)
                     else:
                         vectorstore.add_documents(chunks)
-                    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                    retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 6})
                     rag_chain = build_rag_chain()
 
             except Exception as e:
