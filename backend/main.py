@@ -3,6 +3,7 @@ import threading
 import logging
 import shutil
 import time
+import tempfile
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
@@ -54,6 +55,7 @@ def load_models():
     logger.info("Initializing AI models in background...")
     
     try:
+        # Use a standardized embedding model
         embeddings = HuggingFaceEndpointEmbeddings(
             model="sentence-transformers/all-MiniLM-L6-v2",
             huggingfacehub_api_token=HF_TOKEN,
@@ -70,15 +72,19 @@ def load_models():
         llm = ChatHuggingFace(llm=llm_endpoint)
         logger.info("✓ AI Models (API-based) initialized.")
 
+        # Optional: Load previous index if exists
         if os.path.exists("faiss_index"):
-            vectorstore = FAISS.load_local(
-                "faiss_index",
-                embeddings,
-                allow_dangerous_deserialization=True
-            )
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-            rag_chain = build_rag_chain()
-            logger.info("✓ FAISS index loaded.")
+            try:
+                vectorstore = FAISS.load_local(
+                    "faiss_index",
+                    embeddings,
+                    allow_dangerous_deserialization=True
+                )
+                retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                rag_chain = build_rag_chain()
+                logger.info("✓ Previous FAISS index recovered.")
+            except Exception as e:
+                logger.warning(f"Could not load old index: {e}")
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
 
@@ -141,62 +147,62 @@ def clear_existing_data():
     if os.path.exists("faiss_index"):
         try:
             shutil.rmtree("faiss_index")
-            logger.info("✓ Old FAISS index cleared from disk.")
+            logger.info("✓ Old FAISS index cleared.")
         except Exception as e:
-            logger.warning(f"Could not clear old index: {e}")
+            logger.warning(f"Cleanup error: {e}")
 
 def process_pdf_background(temp_paths: List[str]):
-    """Memory-safe lazy loading and micro-batching for massive PDFs.
-    Runs in a thread pool to avoid blocking the event loop."""
+    """Final robustness fix: 10-page micro-batching and 1000-char chunks."""
     global vectorstore, retriever, rag_chain, embeddings, is_processing
     
     is_processing = True
-    logger.info(f"Massive Document Sync started for {len(temp_paths)} files.")
+    logger.info("Starting Ultra-Stable Ingestion Task...")
     
-    # 1. Wait for embeddings to be ready (up to 60s)
+    # 1. Wait for embeddings (Extended to 120s for slow cold starts)
     wait_count = 0
-    while embeddings is None and wait_count < 12:
-        logger.info("Waiting for AI embeddings to initialize...")
-        time.sleep(5) # Fine in a background thread
+    while embeddings is None and wait_count < 24:
+        logger.info(f"AI Brain warming up... ({wait_count * 5}s)")
+        time.sleep(5)
         wait_count += 1
         
     if embeddings is None:
-        logger.error("Sync failed: Embeddings never initialized.")
+        logger.error("Sync Critical Failure: AI Brain did not initialize.")
         is_processing = False
         return
 
     try:
-        splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400)
+        # Hyper-conservative settings for huge 500-page files on 512MB RAM
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         
         for temp_path in temp_paths:
             try:
-                loader = PyPDFLoader(temp_path)
+                if not os.path.exists(temp_path):
+                    continue
                 
-                # 2. Use lazy_load to avoid pulling 500 pages into RAM at once
+                loader = PyPDFLoader(temp_path)
                 batch_docs = []
-                page_count = 0
+                p_count = 0
                 
                 for page in loader.lazy_load():
                     batch_docs.append(page)
-                    page_count += 1
+                    p_count += 1
                     
-                    # Process in tiny batches of 20 pages for maximum memory safety
-                    if len(batch_docs) >= 20:
-                        logger.info(f"Vectorizing micro-batch (Page {page_count})...")
+                    # 10-page micro-batches for absolute memory safety
+                    if len(batch_docs) >= 10:
+                        logger.info(f"Digitizing pages up to {p_count}...")
                         chunks = splitter.split_documents(batch_docs)
                         if vectorstore is None:
                             vectorstore = FAISS.from_documents(chunks, embeddings)
                         else:
                             vectorstore.add_documents(chunks)
                         
-                        # Real-time update for user feedback
                         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
                         rag_chain = build_rag_chain()
-                        batch_docs = [] # Clear RAM
+                        batch_docs = [] # GC RAM immediately
+                        time.sleep(0.5) # Prevent API rate limit triggers
 
-                # Final flush for remaining pages
+                # Final Batch
                 if batch_docs:
-                    logger.info("Vectorizing final batch chunks...")
                     chunks = splitter.split_documents(batch_docs)
                     if vectorstore is None:
                         vectorstore = FAISS.from_documents(chunks, embeddings)
@@ -206,17 +212,18 @@ def process_pdf_background(temp_paths: List[str]):
                     rag_chain = build_rag_chain()
 
             except Exception as e:
-                logger.error(f"Processing error in {temp_path}: {e}")
+                logger.error(f"Error reading PDF {temp_path}: {e}")
             finally:
                 if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                    try: os.remove(temp_path)
+                    except: pass
 
         if vectorstore:
             vectorstore.save_local("faiss_index")
-            logger.info("✓ Massive document synchronization complete.")
+            logger.info("✓ Universal Ingestion Complete.")
             
     except Exception as e:
-        logger.error(f"Critical error in massive document task: {e}")
+        logger.error(f"Background Loop Error: {e}")
     finally:
         is_processing = False
 
@@ -226,25 +233,26 @@ async def upload_pdf(background_tasks: BackgroundTasks, files: List[UploadFile] 
     global is_processing
 
     if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
+        raise HTTPException(status_code=400, detail="Document missing.")
 
     if is_processing:
-        raise HTTPException(status_code=429, detail="AI is currently establishing a neural link. Please wait until synchronization finishes.")
+        raise HTTPException(status_code=429, detail="AI is currently busy with another document. Please wait.")
 
-    # 1. CLEAR OLD DATA (Ensure Healthy Health PDF is separate from Resume)
+    # Reset old data immediately
     clear_existing_data()
 
     temp_paths = []
     for file in files:
-        temp_path = f"temp_sync_{file.filename}"
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        temp_paths.append(temp_path)
+        # Use tempfile for guaranteed unique/writeable paths
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            temp_paths.append(tmp.name)
 
-    # 2. Add Background Task for safe lazy processing
+    # Trigger final robust background sync
     background_tasks.add_task(process_pdf_background, temp_paths)
 
-    return {"message": "Massive document ingestion started. AI is digitizing content via Neural Link (this takes 1-2 mins for large files) ✅"}
+    return {"message": "Neural Link synchronization initiated. Digestion will take 1-3 minutes for large documents ✅"}
 
 @app.post("/ask/")
 async def ask_question(question: str = Form(...)):
@@ -253,22 +261,23 @@ async def ask_question(question: str = Form(...)):
     if not question:
         raise HTTPException(status_code=400, detail="Empty question")
         
+    # Check if we have NOTHING yet
     if rag_chain is None:
         if is_processing:
-            raise HTTPException(status_code=503, detail="AI is still establishing its neural link with the new document. Please wait about 60 seconds.")
-        raise HTTPException(status_code=503, detail="Neural link disconnected. Please upload a PDF to re-initialize.")
+            raise HTTPException(status_code=503, detail="AI Brain is still establishing the Neural Link. Please wait a few more seconds.")
+        raise HTTPException(status_code=404, detail="No active document map found. Please upload a PDF to begin.")
     
     try:
-        # If still processing but we have some data, warn the user
-        processing_warning = ""
+        # Dynamic warning
+        prefix = ""
         if is_processing:
-            processing_warning = "[AI Sync in Progress: Results might be limited to currently digitized pages]\n\n"
+            prefix = "[AI Sync in Progress: Only partially digitized results available]\n\n"
 
         response = rag_chain.invoke({"question": question})
-        return {"answer": f"{processing_warning}{response}"}
+        return {"answer": f"{prefix}{response}"}
     except Exception as e:
-        logger.error(f"Error in ask_question: {e}")
-        raise HTTPException(status_code=500, detail="Neural link interrupted. Please try re-phrasing.")
+        logger.error(f"Ask Error: {e}")
+        raise HTTPException(status_code=500, detail="Neural link interrupted. Please try again.")
 
 if __name__ == "__main__":
     import uvicorn
