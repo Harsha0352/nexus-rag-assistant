@@ -2,6 +2,7 @@ import os
 import threading
 import logging
 import shutil
+import time
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
@@ -145,54 +146,76 @@ def clear_existing_data():
             logger.warning(f"Could not clear old index: {e}")
 
 async def process_pdf_background(temp_paths: List[str]):
-    """Handles heavy PDF processing and vectorization in batches for memory safety."""
+    """Memory-safe lazy loading and micro-batching for massive PDFs."""
     global vectorstore, retriever, rag_chain, embeddings, is_processing
     
     is_processing = True
-    logger.info(f"Background synchronization started for {len(temp_paths)} files.")
+    logger.info(f"Massive Document Sync started for {len(temp_paths)} files.")
     
+    # 1. Wait for embeddings to be ready (up to 60s)
+    wait_count = 0
+    while embeddings is None and wait_count < 12:
+        logger.info("Waiting for AI embeddings to initialize...")
+        time.sleep(5)
+        wait_count += 1
+        
+    if embeddings is None:
+        logger.error("Sync failed: Embeddings never initialized.")
+        is_processing = False
+        return
+
     try:
         splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400)
         
         for temp_path in temp_paths:
             try:
                 loader = PyPDFLoader(temp_path)
-                # Load document pages
-                pages = loader.load()
                 
-                # Process in batches of 50 pages to stay under 512MB RAM
-                batch_size = 50
-                for i in range(0, len(pages), batch_size):
-                    batch_pages = pages[i : i + batch_size]
-                    logger.info(f"Processing batch {i//batch_size + 1} of {temp_path} ({len(batch_pages)} pages)...")
+                # 2. Use lazy_load to avoid pulling 500 pages into RAM at once
+                batch_docs = []
+                page_count = 0
+                
+                for page in loader.lazy_load():
+                    batch_docs.append(page)
+                    page_count += 1
                     
-                    chunks = splitter.split_documents(batch_pages)
-                    
-                    if chunks and embeddings:
+                    # Process in tiny batches of 20 pages for maximum memory safety
+                    if len(batch_docs) >= 20:
+                        logger.info(f"Vectorizing micro-batch (Page {page_count})...")
+                        chunks = splitter.split_documents(batch_docs)
                         if vectorstore is None:
                             vectorstore = FAISS.from_documents(chunks, embeddings)
                         else:
                             vectorstore.add_documents(chunks)
                         
-                        # Periodically update state to show progress
+                        # Real-time update for user feedback
                         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
                         rag_chain = build_rag_chain()
-                        
+                        batch_docs = [] # Clear RAM
+
+                # Final flush for remaining pages
+                if batch_docs:
+                    logger.info("Vectorizing final batch chunks...")
+                    chunks = splitter.split_documents(batch_docs)
+                    if vectorstore is None:
+                        vectorstore = FAISS.from_documents(chunks, embeddings)
+                    else:
+                        vectorstore.add_documents(chunks)
+                    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                    rag_chain = build_rag_chain()
+
             except Exception as e:
-                logger.error(f"Error processing {temp_path}: {e}")
+                logger.error(f"Processing error in {temp_path}: {e}")
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
 
         if vectorstore:
-            # Save the final index to disk for persistence
             vectorstore.save_local("faiss_index")
-            logger.info("✓ PDF Synchronization complete and saved to disk.")
-        else:
-            logger.warning("No data was vectorized.")
+            logger.info("✓ Massive document synchronization complete.")
             
     except Exception as e:
-        logger.error(f"Critical error in background PDF task: {e}")
+        logger.error(f"Critical error in massive document task: {e}")
     finally:
         is_processing = False
 
@@ -205,22 +228,22 @@ async def upload_pdf(background_tasks: BackgroundTasks, files: List[UploadFile] 
         raise HTTPException(status_code=400, detail="No files provided")
 
     if is_processing:
-        raise HTTPException(status_code=429, detail="AI is currently digesting another document. Please wait.")
+        raise HTTPException(status_code=429, detail="AI is currently establishing a neural link. Please wait until synchronization finishes.")
 
-    # 1. Clear ANY old state immediately (Resume vs Health PDF)
+    # 1. CLEAR OLD DATA (Ensure Healthy Health PDF is separate from Resume)
     clear_existing_data()
 
     temp_paths = []
     for file in files:
-        temp_path = f"temp_{file.filename}"
+        temp_path = f"temp_sync_{file.filename}"
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         temp_paths.append(temp_path)
 
-    # 2. Start background batch processing
+    # 2. Add Background Task for safe lazy processing
     background_tasks.add_task(process_pdf_background, temp_paths)
 
-    return {"message": "Large document ingestion started. AI is digesting content in batches to ensure maximum accuracy ✅"}
+    return {"message": "Massive document ingestion started. AI is digitizing content via Neural Link (this takes 1-2 mins for large files) ✅"}
 
 @app.post("/ask/")
 async def ask_question(question: str = Form(...)):
@@ -231,14 +254,14 @@ async def ask_question(question: str = Form(...)):
         
     if rag_chain is None:
         if is_processing:
-            raise HTTPException(status_code=503, detail="AI is still establishing its neural link with the new document. Please wait about 30-60 seconds.")
-        raise HTTPException(status_code=503, detail="No document maps found. Please upload a PDF.")
+            raise HTTPException(status_code=503, detail="AI is still establishing its neural link with the new document. Please wait about 60 seconds.")
+        raise HTTPException(status_code=503, detail="Neural link disconnected. Please upload a PDF to re-initialize.")
     
     try:
         # If still processing but we have some data, warn the user
         processing_warning = ""
         if is_processing:
-            processing_warning = "[Note: AI is still digesting the full document, answers might be incomplete until sync finishes]\n\n"
+            processing_warning = "[AI Sync in Progress: Results might be limited to currently digitized pages]\n\n"
 
         response = rag_chain.invoke({"question": question})
         return {"answer": f"{processing_warning}{response}"}
