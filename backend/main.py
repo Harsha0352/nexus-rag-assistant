@@ -145,8 +145,9 @@ def clear_existing_data():
         except Exception as e:
             logger.warning(f"Could not clear old index: {e}")
 
-async def process_pdf_background(temp_paths: List[str]):
-    """Memory-safe lazy loading and micro-batching for massive PDFs."""
+def process_pdf_background(temp_paths: List[str]):
+    """Memory-safe lazy loading and micro-batching for massive PDFs.
+    Runs in a thread pool to avoid blocking the event loop."""
     global vectorstore, retriever, rag_chain, embeddings, is_processing
     
     is_processing = True
@@ -156,7 +157,7 @@ async def process_pdf_background(temp_paths: List[str]):
     wait_count = 0
     while embeddings is None and wait_count < 12:
         logger.info("Waiting for AI embeddings to initialize...")
-        time.sleep(5)
+        time.sleep(5) # Fine in a background thread
         wait_count += 1
         
     if embeddings is None:
