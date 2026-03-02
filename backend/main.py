@@ -80,7 +80,7 @@ def load_models():
                     embeddings,
                     allow_dangerous_deserialization=True
                 )
-                retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 6})
                 rag_chain = build_rag_chain()
                 logger.info("✓ Previous FAISS index recovered.")
             except Exception as e:
