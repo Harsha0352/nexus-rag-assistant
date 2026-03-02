@@ -131,35 +131,65 @@ def build_rag_chain():
         | StrOutputParser()
     )
 
+def clear_existing_data():
+    """Clears old data to ensure new uploads are not mixed with old results."""
+    global vectorstore, retriever, rag_chain
+    vectorstore = None
+    retriever = None
+    rag_chain = None
+    if os.path.exists("faiss_index"):
+        try:
+            shutil.rmtree("faiss_index")
+            logger.info("✓ Old FAISS index cleared from disk.")
+        except Exception as e:
+            logger.warning(f"Could not clear old index: {e}")
+
 async def process_pdf_background(temp_paths: List[str]):
-    """Handles heavy PDF processing and vectorization in the background."""
+    """Handles heavy PDF processing and vectorization in batches for memory safety."""
     global vectorstore, retriever, rag_chain, embeddings, is_processing
     
     is_processing = True
-    logger.info(f"Background task started for {len(temp_paths)} files.")
+    logger.info(f"Background synchronization started for {len(temp_paths)} files.")
     
     try:
-        all_chunks = []
+        splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400)
+        
         for temp_path in temp_paths:
             try:
                 loader = PyPDFLoader(temp_path)
-                # Larger chunk size for better efficiency with massive documents
-                chunks = loader.load_and_split(RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400))
-                all_chunks.extend(chunks)
+                # Load document pages
+                pages = loader.load()
+                
+                # Process in batches of 50 pages to stay under 512MB RAM
+                batch_size = 50
+                for i in range(0, len(pages), batch_size):
+                    batch_pages = pages[i : i + batch_size]
+                    logger.info(f"Processing batch {i//batch_size + 1} of {temp_path} ({len(batch_pages)} pages)...")
+                    
+                    chunks = splitter.split_documents(batch_pages)
+                    
+                    if chunks and embeddings:
+                        if vectorstore is None:
+                            vectorstore = FAISS.from_documents(chunks, embeddings)
+                        else:
+                            vectorstore.add_documents(chunks)
+                        
+                        # Periodically update state to show progress
+                        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                        rag_chain = build_rag_chain()
+                        
             except Exception as e:
                 logger.error(f"Error processing {temp_path}: {e}")
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
 
-        if all_chunks and embeddings:
-            logger.info(f"Vectorizing {len(all_chunks)} chunks...")
-            vectorstore = FAISS.from_documents(all_chunks, embeddings)
-            retriever = vectorstore.as_retriever()
-            rag_chain = build_rag_chain()
-            logger.info("✓ PDF Background synchronization complete.")
+        if vectorstore:
+            # Save the final index to disk for persistence
+            vectorstore.save_local("faiss_index")
+            logger.info("✓ PDF Synchronization complete and saved to disk.")
         else:
-            logger.warning("No chunks generated or embeddings not ready.")
+            logger.warning("No data was vectorized.")
             
     except Exception as e:
         logger.error(f"Critical error in background PDF task: {e}")
@@ -169,13 +199,16 @@ async def process_pdf_background(temp_paths: List[str]):
 # ---------------- ENDPOINTS ----------------
 @app.post("/upload-pdf/")
 async def upload_pdf(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
-    global embeddings, is_processing
+    global is_processing
 
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
     if is_processing:
-        raise HTTPException(status_code=400, detail="Synchronization already in progress. Please wait.")
+        raise HTTPException(status_code=429, detail="AI is currently digesting another document. Please wait.")
+
+    # 1. Clear ANY old state immediately (Resume vs Health PDF)
+    clear_existing_data()
 
     temp_paths = []
     for file in files:
@@ -184,10 +217,10 @@ async def upload_pdf(background_tasks: BackgroundTasks, files: List[UploadFile] 
             shutil.copyfileobj(file.file, buffer)
         temp_paths.append(temp_path)
 
-    # Respond immediately and run processing in background to avoid Render 30s timeout
+    # 2. Start background batch processing
     background_tasks.add_task(process_pdf_background, temp_paths)
 
-    return {"message": "Large document ingestion started. AI is digesting content in the background ✅"}
+    return {"message": "Large document ingestion started. AI is digesting content in batches to ensure maximum accuracy ✅"}
 
 @app.post("/ask/")
 async def ask_question(question: str = Form(...)):
@@ -196,18 +229,22 @@ async def ask_question(question: str = Form(...)):
     if not question:
         raise HTTPException(status_code=400, detail="Empty question")
         
-    if is_processing:
-        raise HTTPException(status_code=503, detail="AI is still digesting your document. Please wait a minute while the neural link completes.")
-        
     if rag_chain is None:
-        raise HTTPException(status_code=503, detail="AI Neural Link is not initialized yet. Please upload a PDF or wait for startup to complete.")
+        if is_processing:
+            raise HTTPException(status_code=503, detail="AI is still establishing its neural link with the new document. Please wait about 30-60 seconds.")
+        raise HTTPException(status_code=503, detail="No document maps found. Please upload a PDF.")
     
     try:
+        # If still processing but we have some data, warn the user
+        processing_warning = ""
+        if is_processing:
+            processing_warning = "[Note: AI is still digesting the full document, answers might be incomplete until sync finishes]\n\n"
+
         response = rag_chain.invoke({"question": question})
-        return {"answer": response}
+        return {"answer": f"{processing_warning}{response}"}
     except Exception as e:
         logger.error(f"Error in ask_question: {e}")
-        raise HTTPException(status_code=500, detail="Internal processing error")
+        raise HTTPException(status_code=500, detail="Neural link interrupted. Please try re-phrasing.")
 
 if __name__ == "__main__":
     import uvicorn
