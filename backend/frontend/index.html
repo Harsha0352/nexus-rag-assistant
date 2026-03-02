@@ -441,14 +441,14 @@
             <div id="voiceTranscript" class="voice-transcript" style="display: none;"></div>
 
             <div class="input-area">
-                <input type="text" id="questionInput" class="modern-input" placeholder="Awaiting synchronization..."
-                    disabled onkeypress="if(event.key === 'Enter') askQuestion()" />
+                <input type="text" id="questionInput" class="modern-input" placeholder="Type your query here..."
+                    onkeypress="if(event.key === 'Enter') askQuestion()" />
 
-                <button id="askBtn" class="btn-icon" onclick="askQuestion()" disabled title="Send Query">
+                <button id="askBtn" class="btn-icon" onclick="askQuestion()" title="Send Query">
                     ➤
                 </button>
 
-                <button id="micBtn" class="btn-modern btn-aurora mic-btn-main" onclick="toggleMicrophone()" disabled
+                <button id="micBtn" class="btn-modern btn-aurora mic-btn-main" onclick="toggleMicrophone()"
                     style="display: none;">
                     🎤 NEURAL LINK
                 </button>
@@ -659,9 +659,9 @@
         }
 
         async function askQuestion() {
-            if (!isProcessed || !questionInput.value.trim()) return;
-
             const question = questionInput.value.trim();
+            if (!question) return;
+
             addMessage('user', question);
             questionInput.value = '';
             askBtn.disabled = true;
@@ -686,7 +686,7 @@
                             errMsg = errJson.detail;
                         }
                     } catch { }
-                    throw new Error(`Request failed: ${errMsg}`);
+                    throw new Error(errMsg);
                 }
 
                 const data = await response.json();
@@ -700,7 +700,11 @@
                 }
             } catch (error) {
                 removeStatusMessage();
-                addStatusMessage('error', `✗ Error: ${error.message}`);
+                let displayError = error.message;
+                if (displayError.includes("not initialized")) {
+                    displayError = "AI Neural Link is still initializing. Please wait a few seconds and try again.";
+                }
+                addStatusMessage('error', `✗ ${displayError}`);
             }
 
             askBtn.disabled = false;

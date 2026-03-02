@@ -1,5 +1,5 @@
 import os
-from contextlib import asynccontextmanager
+import threading
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import HTMLResponse
@@ -11,7 +11,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import (
-    HuggingFaceEndpointEmbeddings,
+    HuggingFaceEmbeddings,
     HuggingFaceEndpoint,
     ChatHuggingFace,
 )
@@ -25,12 +25,12 @@ load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # ---------------- APP ----------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    load_models()
-    yield
+app = FastAPI()
 
-app = FastAPI(lifespan=lifespan)
+@app.on_event("startup")
+async def startup_event():
+    # Start loading models in a background thread to avoid blocking server start
+    threading.Thread(target=load_models, daemon=True).start()
 
 # -------- CORS -------- #
 app.add_middleware(
@@ -59,6 +59,8 @@ async def get_frontend():
         """
 
 # ---------------- GLOBALS ----------------
+llm = None
+embeddings = None
 vectorstore = None
 retriever = None
 rag_chain = None
@@ -71,33 +73,40 @@ class QuestionRequest(BaseModel):
 def load_models():
     global llm, embeddings, vectorstore, retriever, rag_chain
 
-    embeddings = HuggingFaceEndpointEmbeddings(
-        model="sentence-transformers/all-MiniLM-L6-v2",
-        huggingfacehub_api_token=HF_TOKEN,
-    )
-
-    llm_endpoint = HuggingFaceEndpoint(
-        repo_id="meta-llama/Meta-Llama-3.1-70B-Instruct",
-        task="text-generation",
-        huggingfacehub_api_token=HF_TOKEN,
-        temperature=0.5,
-        max_new_tokens=512,
-    )
-
-    llm = ChatHuggingFace(llm=llm_endpoint)
-
-    # Load pre-created FAISS index
+    print("Loading AI models in background...")
+    
     try:
-        vectorstore = FAISS.load_local(
-            "faiss_index",
-            embeddings,
-            allow_dangerous_deserialization=True
+        # Use local embeddings to avoid API latency during PDF processing
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'}
         )
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-        rag_chain = build_rag_chain()
+
+        # Use 8B model for faster inference speed
+        llm_endpoint = HuggingFaceEndpoint(
+            repo_id="meta-llama/Llama-3.1-8B-Instruct",
+            task="text-generation",
+            huggingfacehub_api_token=HF_TOKEN,
+            temperature=0.5,
+            max_new_tokens=512,
+        )
+
+        llm = ChatHuggingFace(llm=llm_endpoint)
+        print("✓ AI Models (Local Embeddings & 8B LLM) initialized.")
+
+        if os.path.exists("faiss_index"):
+            vectorstore = FAISS.load_local(
+                "faiss_index",
+                embeddings,
+                allow_dangerous_deserialization=True
+            )
+            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+            rag_chain = build_rag_chain()
+            print("✓ FAISS index loaded from local storage.")
+        else:
+            print("Note: No local FAISS index found. System will wait for PDF upload.")
     except Exception as e:
-        print(f"Warning: Could not load FAISS index: {e}")
-        print("The system will work after you upload a PDF.")
+        print(f"Error during background initialization: {e}")
 
 # ---------------- HELPERS ----------------
 def format_docs(docs):
@@ -106,8 +115,8 @@ def format_docs(docs):
 def build_rag_chain():
     global retriever, llm
     
-    if retriever is None:
-        raise ValueError("Retriever not initialized. Please load a FAISS index or upload a PDF.")
+    if retriever is None or llm is None:
+        raise ValueError("AI models or Retriever not initialized.")
     
     prompt = ChatPromptTemplate.from_template(
         """
@@ -163,6 +172,7 @@ async def upload_pdf(files: List[UploadFile] = File(...)):
         os.remove(temp_path)
 
     if all_chunks:
+        # FAISS.from_documents is now near-instant thanks to local embeddings
         vectorstore = FAISS.from_documents(all_chunks, embeddings)
         retriever = vectorstore.as_retriever()
         rag_chain = build_rag_chain()
@@ -221,7 +231,7 @@ async def ask_question(question: str = Form(...)):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
     if rag_chain is None:
-        raise HTTPException(status_code=400, detail="No documents loaded. Please upload a PDF or ensure FAISS index is created.")
+        raise HTTPException(status_code=400, detail="AI link is not initialized yet. Please wait a few seconds or ensure FAISS index/PDF is uploaded.")
 
     try:
         response = rag_chain.invoke({"question": question})
@@ -229,3 +239,7 @@ async def ask_question(question: str = Form(...)):
     except Exception as e:
         print(f"Error in ask_question: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing question: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
