@@ -125,7 +125,17 @@ def build_rag_chain():
         return None
     
     prompt = ChatPromptTemplate.from_template(
-        "Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion:\n{question}"
+        """You are a medical and professional assistant. Answer the question based ONLY on the provided context. 
+
+Note: The context may contain slight formatting errors (like missing spaces between words) due to PDF digitization. Be flexible and search for the concepts described even if names are slightly merged.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:"""
     )
 
     return (
@@ -196,7 +206,7 @@ def process_pdf_background(temp_paths: List[str]):
                         else:
                             vectorstore.add_documents(chunks)
                         
-                        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                        retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 6})
                         rag_chain = build_rag_chain()
                         batch_docs = [] # GC RAM immediately
                         time.sleep(0.5) # Prevent API rate limit triggers
