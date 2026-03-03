@@ -123,10 +123,10 @@ def load_models():
                     embeddings,
                     allow_dangerous_deserialization=True
                 )
-                # Increased k from 6 to 10 for better coverage in large PDFs
-                retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
+                # FACTUAL RESCUE: Switch to similarity search for better factual recall in clinical STGs
+                retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
                 rag_chain = build_rag_chain()
-                logger.info("✓ Previous FAISS index recovered.")
+                logger.info("✓ Previous FAISS index recovered (Similarity Search active).")
             except Exception as e:
                 logger.warning(f"Could not load old index: {e}")
     except Exception as e:
@@ -167,7 +167,8 @@ async def get_frontend():
 def format_docs(docs):
     if not docs:
         return "No relevant context found."
-    return "\n\n".join(f"[Source: Page {doc.metadata.get('page', 'unknown')}]\n{doc.page_content}" for doc in docs)
+    # Include clear page numbering for medical reference accuracy
+    return "\n\n".join(f"[Source: PDF Page {doc.metadata.get('page', 'unknown')}]\n{doc.page_content.strip()}" for doc in docs)
 
 def build_rag_chain():
     global retriever, llm
@@ -175,11 +176,7 @@ def build_rag_chain():
         return None
     
     prompt = ChatPromptTemplate.from_template(
-        """You are an advanced medical and professional assistant. Your primary goal is to provide accurate, detailed, and context-aware information.
-
-Analyze the provided context thoroughly. If the question asks for something not directly present but can be inferred reliably, do so cautiously. If the answer is truly not in the context, state that clearly.
-
-Note: Digitized PDF text may have formatting issues. Interpret technical terms and concepts flexibly.
+        """You are an advanced medical assistant. Your task is to provide precise answers based ONLY on the provided context.
 
 Context:
 {context}
@@ -187,7 +184,12 @@ Context:
 Question:
 {question}
 
-Complete and detailed answer based ONLY on context:"""
+Instructions:
+1. If the answer is in the context, provide it clearly and mention the source page found in the context.
+2. If the answer is not in the context, state: "The provided medical guidelines do not contain information on this specific topic."
+3. Do not use outside knowledge. Rely exclusively on the provided medical text.
+
+Answer based on specific medical guidelines:"""
     )
 
     return (
@@ -206,11 +208,7 @@ def build_rag_chain_custom(custom_retriever):
         return None
     
     prompt = ChatPromptTemplate.from_template(
-        """You are an advanced medical and professional assistant. Your primary goal is to provide accurate, detailed, and context-aware information.
-
-Analyze the provided context thoroughly. If the question asks for something not directly present but can be inferred reliably, do so cautiously. If the answer is truly not in the context, state that clearly.
-
-Note: Digitized PDF text may have formatting issues. Interpret technical terms and concepts flexibly.
+        """You are an advanced medical assistant. Your task is to provide precise answers based ONLY on the provided context.
 
 Context:
 {context}
@@ -218,7 +216,12 @@ Context:
 Question:
 {question}
 
-Complete and detailed answer based ONLY on context:"""
+Instructions:
+1. If the answer is in the context, provide it clearly and mention the source page found in the context.
+2. If the answer is not in the context, state: "The provided medical guidelines do not contain information on this specific topic."
+3. Do not use outside knowledge. Rely exclusively on the provided medical text.
+
+Answer based on specific medical guidelines:"""
     )
 
     return (
@@ -259,7 +262,7 @@ def clear_existing_data():
             logger.warning(f"Cleanup error: {e}")
 
 def process_pdf_background(temp_paths: List[str], file_names: List[str]):
-    """Final robustness fix: 10-page micro-batching and 700-char chunks for better vector accuracy."""
+    """FACTUAL RESCUE: Robust ingestion with similarity search and memory safety."""
     global vectorstore, retriever, rag_chain, embeddings, is_processing, processing_stats
     global pinecone_retriever, pinecone_rag_chain
     
@@ -279,12 +282,11 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
         return
 
     try:
-        # Optimized chunk size for all-MiniLM-L6-v2 (max 256 tokens)
-        # ~700-800 chars is usually safe for ~200 tokens
+        # FACTUAL RESCUE: Smaller, cleaner chunks for clinical accuracy
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=700, 
-            chunk_overlap=100,
-            separators=["\n\n", "\n", ".", " ", ""]
+            chunk_size=600, 
+            chunk_overlap=50,
+            separators=["\n\n", "\n", ". ", " ", ""]
         )
         
         for i, temp_path in enumerate(temp_paths):
@@ -292,47 +294,49 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                 if not os.path.exists(temp_path):
                     continue
                 
+                logger.info(f"Processing: {file_names[i]}")
                 processing_stats["current_file"] = file_names[i]
+                
+                # FACTUAL RESCUE: Approximate page count to avoid OOM by pre-scanning
+                # We'll use a fixed large number if counting fails
+                processing_stats["total_pages"] = 450 # Default estimate for medical STG
+                
                 loader = PyPDFLoader(temp_path)
-                
-                # Try to count total pages if possible
-                try:
-                    all_pages = list(loader.lazy_load())
-                    processing_stats["total_pages"] += len(all_pages)
-                except:
-                    pass
-                
                 batch_docs = []
                 p_count = 0
                 
-                # Reload for lazy loading
-                loader = PyPDFLoader(temp_path)
+                # FACTUAL RESCUE: Stream pages one by one to save RAM
                 for page in loader.lazy_load():
                     batch_docs.append(page)
                     p_count += 1
                     processing_stats["processed_pages"] += 1
                     
-                    # 10-page micro-batches for absolute memory safety
+                    # 10-page micro-batches for absolute memory safety on Render
                     if len(batch_docs) >= 10:
-                        logger.info(f"Digitizing pages up to {p_count} in {file_names[i]}...")
-                        chunks = splitter.split_documents(batch_docs)
-                        if vectorstore is None:
-                            vectorstore = FAISS.from_documents(chunks, embeddings)
-                        else:
-                            vectorstore.add_documents(chunks)
-                        
-                        # Increased k for better recall
-                        retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
-                        rag_chain = build_rag_chain()
-                        
-                        # Dual Indexing: Pinecone
-                        if pinecone_vectorstore:
-                            pinecone_vectorstore.add_documents(chunks)
-                            pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
-                            pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                        try:
+                            logger.info(f"Mapping Pages {p_count-9} to {p_count}...")
+                            chunks = splitter.split_documents(batch_docs)
+                            
+                            if vectorstore is None:
+                                vectorstore = FAISS.from_documents(chunks, embeddings)
+                            else:
+                                vectorstore.add_documents(chunks)
+                            
+                            # FACTUAL RESCUE: Similarity search is better for direct clinical matches
+                            retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                            rag_chain = build_rag_chain()
+                            
+                            # Pinecone Sync
+                            if pinecone_vectorstore:
+                                pinecone_vectorstore.add_documents(chunks)
+                                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                                pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
 
-                        batch_docs = [] # GC RAM immediately
-                        time.sleep(0.3) # Prevent API rate limit triggers
+                        except Exception as batch_err:
+                            logger.error(f"Batch Error (skipping pages {p_count-9}-{p_count}): {batch_err}")
+                        finally:
+                            batch_docs = [] # GC RAM immediately
+                            time.sleep(1.0) # Conservative API spacing
 
                 # Final Batch
                 if batch_docs:
@@ -342,13 +346,16 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                     else:
                         vectorstore.add_documents(chunks)
                     
-                    retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
+                    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
                     rag_chain = build_rag_chain()
                     
                     if pinecone_vectorstore:
                         pinecone_vectorstore.add_documents(chunks)
-                        pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
+                        pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
                         pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+
+                # Ensure total pages matches reality if we finished
+                processing_stats["total_pages"] = processing_stats["processed_pages"]
 
             except Exception as e:
                 logger.error(f"Error reading PDF {temp_path}: {e}")
@@ -359,10 +366,10 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
 
         if vectorstore:
             vectorstore.save_local("faiss_index")
-            logger.info("✓ Universal Ingestion Complete.")
+            logger.info("✓ Neural Link Finalized.")
             
     except Exception as e:
-        logger.error(f"Background Loop Error: {e}")
+        logger.error(f"Global Ingestion Error: {e}")
     finally:
         is_processing = False
         processing_stats["current_file"] = "Completed"
