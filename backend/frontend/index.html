@@ -422,6 +422,24 @@
                 style="margin-top: 20px;">
                 INITIATE SYNCHRONIZATION
             </button>
+
+            <!-- Progress Tracking UI -->
+            <div id="progressContainer"
+                style="display: none; margin-top: 25px; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 16px; border: 1px solid var(--glass-border);">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px;">
+                    <span id="progressStatus" style="color: var(--accent-aurora); font-weight: 600;">Digesting...</span>
+                    <span id="progressPercent" style="color: var(--text-pure);">0%</span>
+                </div>
+                <div
+                    style="width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
+                    <div id="progressBar"
+                        style="width: 0%; height: 100%; background: linear-gradient(to right, var(--accent-aurora), var(--nebula-aurora)); transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);">
+                    </div>
+                </div>
+                <p id="progressFile"
+                    style="font-size: 11px; margin-top: 8px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                </p>
+            </div>
         </div>
 
         <!-- Neural Terminal -->
@@ -463,6 +481,54 @@
         let isListening = false;
         let recognition = null;
         let voiceTranscript = '';
+        let pollInterval = null;
+
+        // --- Progress Polling Logic ---
+        function startStatusPolling() {
+            const progressContainer = document.getElementById('progressContainer');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressBar = document.getElementById('progressBar');
+            const progressFile = document.getElementById('progressFile');
+
+            progressContainer.style.display = 'block';
+
+            if (pollInterval) clearInterval(pollInterval);
+
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/status');
+                    if (!response.ok) return;
+
+                    const data = await response.json();
+
+                    progressPercent.textContent = `${data.progress_percentage}%`;
+                    progressBar.style.width = `${data.progress_percentage}%`;
+
+                    if (data.stats.current_file && data.stats.current_file !== 'Completed') {
+                        progressFile.textContent = `Processing: ${data.stats.current_file}`;
+                        progressStatus.textContent = 'Neural Mapping...';
+                    } else if (data.stats.current_file === 'Completed') {
+                        progressStatus.textContent = 'Sync Complete ✓';
+                        progressFile.textContent = 'All documents digitized.';
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+
+                        // Hide after a delay
+                        setTimeout(() => {
+                            // progressContainer.style.display = 'none';
+                        }, 5000);
+                    }
+
+                    if (!data.is_processing && data.progress_percentage >= 100) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                } catch (err) {
+                    console.error('Polling error:', err);
+                }
+            }, 2000);
+        }
 
         // Initialize Speech Recognition
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -646,6 +712,10 @@
 
                 const data = await response.json();
                 addStatusMessage('success', `✓ ${data.message}`);
+
+                // Start polling for progress
+                startStatusPolling();
+
                 isProcessed = true;
                 questionInput.disabled = false;
                 micBtn.disabled = false;

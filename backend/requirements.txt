@@ -22,3 +22,5 @@ transformers
 
 gTTS
 soundfile
+pinecone-client
+langchain-pinecone
