@@ -4,8 +4,12 @@ import logging
 import shutil
 import time
 import tempfile
-from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+# ---------------- ENV (Move to top) ----------------
+base_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(base_dir, ".env")
+load_dotenv(dotenv_path=env_path)
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,10 +42,7 @@ except ImportError as e:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.vectorstores import FAISS
 
-# ---------------- ENV ----------------
-base_dir = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(base_dir, ".env")
-load_dotenv(dotenv_path=env_path)
+# ---------------- ENV (Handled at top) ----------------
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # ---------------- GLOBALS ----------------
@@ -84,6 +85,8 @@ def load_models():
         # Initialize Pinecone
         pinecone_api_key = os.getenv("PINECONE_API_KEY")
         pinecone_index_name = os.getenv("PINECONE_INDEX_NAME")
+        logger.info(f"Pinecone Config Found - API Key: {bool(pinecone_api_key)}, Index: {pinecone_index_name}")
+        
         if pinecone_api_key and pinecone_index_name:
             try:
                 global pc, pinecone_vectorstore, pinecone_retriever, pinecone_rag_chain
@@ -239,6 +242,19 @@ Answer based on specific medical guidelines:"""
         | StrOutputParser()
     )
 
+def invoke_with_retry(chain, input_data, max_retries=3, initial_delay=2):
+    """Invokes a chain with exponential backoff to handle transient rate limits."""
+    for attempt in range(max_retries):
+        try:
+            return chain.invoke(input_data)
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                delay = initial_delay * (2 ** attempt)
+                logger.warning(f"Rate limited (429). Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            raise e
+
 def clear_existing_data():
     """Clears old data to ensure new uploads are not mixed with old results."""
     global vectorstore, retriever, rag_chain, processing_stats
@@ -334,7 +350,7 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                         if len(batch_docs) >= 15:
                             _process_batch(batch_docs, p_count, embeddings, splitter)
                             batch_docs = []
-                            time.sleep(0.5) # Slight pause for API stability
+                            time.sleep(1.5) # Increased pause for API stability/rate-limit prevention
                     except Exception as page_err:
                         logger.error(f"Error on page {p_count} in {file_names[i]}: {page_err}")
                         error_occurred = True
@@ -461,7 +477,7 @@ async def ask_question(question: str = Form(...)):
         faiss_response = "FAISS not initialized"
         if rag_chain:
             try:
-                faiss_response = rag_chain.invoke({"question": question})
+                faiss_response = invoke_with_retry(rag_chain, {"question": question})
             except Exception as e:
                 logger.error(f"FAISS Invoke Error: {e}")
                 faiss_response = f"Error during FAISS retrieval: {str(e)}"
@@ -469,7 +485,7 @@ async def ask_question(question: str = Form(...)):
         pinecone_response = "Pinecone not initialized"
         if pinecone_rag_chain:
             try:
-                pinecone_response = pinecone_rag_chain.invoke({"question": question})
+                pinecone_response = invoke_with_retry(pinecone_rag_chain, {"question": question})
             except Exception as e:
                 logger.error(f"Pinecone Invoke Error: {e}")
                 pinecone_response = f"Error during Pinecone retrieval: {str(e)}"
