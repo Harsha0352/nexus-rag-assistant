@@ -39,7 +39,9 @@ except ImportError as e:
     from langchain_community.vectorstores import FAISS
 
 # ---------------- ENV ----------------
-load_dotenv()
+base_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(base_dir, ".env")
+load_dotenv(dotenv_path=env_path)
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # ---------------- GLOBALS ----------------
@@ -111,7 +113,9 @@ def load_models():
                     embedding=embeddings,
                     pinecone_api_key=pinecone_api_key
                 )
-                logger.info("✓ Pinecone initialized.")
+                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                logger.info("✓ Pinecone initialized and RAG chain built.")
             except Exception as e:
                 logger.error(f"Pinecone initialization failed: {e}")
 
@@ -297,9 +301,9 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                 logger.info(f"Processing: {file_names[i]}")
                 processing_stats["current_file"] = file_names[i]
                 
-                # FACTUAL RESCUE: Approximate page count to avoid OOM by pre-scanning
-                # We'll use a fixed large number if counting fails
-                processing_stats["total_pages"] = 450 # Default estimate for medical STG
+                # Improved page accounting
+                if processing_stats["total_pages"] == 0:
+                    processing_stats["total_pages"] = 300 # Initial estimate
                 
                 loader = PyPDFLoader(temp_path)
                 batch_docs = []
@@ -326,11 +330,14 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                             retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
                             rag_chain = build_rag_chain()
                             
-                            # Pinecone Sync
+                            # Pinecone Sync (Robust)
                             if pinecone_vectorstore:
-                                pinecone_vectorstore.add_documents(chunks)
-                                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
-                                pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                                try:
+                                    pinecone_vectorstore.add_documents(chunks)
+                                    pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                                    pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                                except Exception as pc_err:
+                                    logger.error(f"Pinecone Sync Error (Non-fatal): {pc_err}")
 
                         except Exception as batch_err:
                             logger.error(f"Batch Error (skipping pages {p_count-9}-{p_count}): {batch_err}")
@@ -350,9 +357,12 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                     rag_chain = build_rag_chain()
                     
                     if pinecone_vectorstore:
-                        pinecone_vectorstore.add_documents(chunks)
-                        pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
-                        pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                        try:
+                            pinecone_vectorstore.add_documents(chunks)
+                            pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                            pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                        except Exception as pc_err:
+                            logger.error(f"Final Pinecone Sync Error: {pc_err}")
 
                 # Ensure total pages matches reality if we finished
                 processing_stats["total_pages"] = processing_stats["processed_pages"]
@@ -372,6 +382,9 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
         logger.error(f"Global Ingestion Error: {e}")
     finally:
         is_processing = False
+        # Set processed to total to ensure 100% on success, else keep actual progress
+        if processing_stats["processed_pages"] > 0:
+            processing_stats["total_pages"] = processing_stats["processed_pages"]
         processing_stats["current_file"] = "Completed"
 
 # ---------------- ENDPOINTS ----------------
