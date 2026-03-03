@@ -128,7 +128,8 @@ def load_models():
                     allow_dangerous_deserialization=True
                 )
                 # FACTUAL RESCUE: Switch to similarity search for better factual recall in clinical STGs
-                retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                # Optimization: Slightly reduced k for large PDFs to prevent context overflow or timeouts
+                retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8})
                 rag_chain = build_rag_chain()
                 logger.info("✓ Previous FAISS index recovered (Similarity Search active).")
             except Exception as e:
@@ -381,13 +382,13 @@ def _process_batch(batch_docs, p_count, embeddings, splitter):
         else:
             vectorstore.add_documents(chunks)
         
-        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8})
         rag_chain = build_rag_chain()
         
         if pinecone_vectorstore:
             try:
                 pinecone_vectorstore.add_documents(chunks)
-                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8})
                 pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
             except Exception as pc_err:
                 logger.error(f"Pinecone Sync Error: {pc_err}")
@@ -459,18 +460,28 @@ async def ask_question(question: str = Form(...)):
         # Compare results
         faiss_response = "FAISS not initialized"
         if rag_chain:
-            faiss_response = rag_chain.invoke({"question": question})
+            try:
+                faiss_response = rag_chain.invoke({"question": question})
+            except Exception as e:
+                logger.error(f"FAISS Invoke Error: {e}")
+                faiss_response = f"Error during FAISS retrieval: {str(e)}"
         
         pinecone_response = "Pinecone not initialized"
         if pinecone_rag_chain:
-            pinecone_response = pinecone_rag_chain.invoke({"question": question})
+            try:
+                pinecone_response = pinecone_rag_chain.invoke({"question": question})
+            except Exception as e:
+                logger.error(f"Pinecone Invoke Error: {e}")
+                pinecone_response = f"Error during Pinecone retrieval: {str(e)}"
 
         final_answer = f"{prefix}**[FAISS MODEL ANSWER]**\n{faiss_response}\n\n---\n\n**[PINECONE MODEL ANSWER]**\n{pinecone_response}"
         
         return {"answer": final_answer}
     except Exception as e:
-        logger.error(f"Ask Error: {e}")
-        raise HTTPException(status_code=500, detail="Neural link interrupted. Please try again.")
+        logger.error(f"CRITICAL Ask Error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Neural link interrupted: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
