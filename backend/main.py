@@ -270,6 +270,8 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
     global vectorstore, retriever, rag_chain, embeddings, is_processing, processing_stats
     global pinecone_retriever, pinecone_rag_chain
     
+    error_occurred = False
+    
     is_processing = True
     logger.info("Starting Optimized Ingestion Task...")
     
@@ -309,83 +311,89 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                 batch_docs = []
                 p_count = 0
                 
-                # FACTUAL RESCUE: Stream pages one by one to save RAM
-                for page in loader.lazy_load():
-                    batch_docs.append(page)
-                    p_count += 1
-                    processing_stats["processed_pages"] += 1
-                    
-                    # 10-page micro-batches for absolute memory safety on Render
-                    if len(batch_docs) >= 10:
-                        try:
-                            logger.info(f"Mapping Pages {p_count-9} to {p_count}...")
-                            chunks = splitter.split_documents(batch_docs)
-                            
-                            if vectorstore is None:
-                                vectorstore = FAISS.from_documents(chunks, embeddings)
-                            else:
-                                vectorstore.add_documents(chunks)
-                            
-                            # FACTUAL RESCUE: Similarity search is better for direct clinical matches
-                            retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
-                            rag_chain = build_rag_chain()
-                            
-                            # Pinecone Sync (Robust)
-                            if pinecone_vectorstore:
-                                try:
-                                    pinecone_vectorstore.add_documents(chunks)
-                                    pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
-                                    pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
-                                except Exception as pc_err:
-                                    logger.error(f"Pinecone Sync Error (Non-fatal): {pc_err}")
+                # Robust Page iteration
+                try:
+                    pages = loader.lazy_load()
+                except Exception as load_err:
+                    logger.error(f"Failed to initialize loader for {file_names[i]}: {load_err}")
+                    error_occurred = True
+                    continue
 
-                        except Exception as batch_err:
-                            logger.error(f"Batch Error (skipping pages {p_count-9}-{p_count}): {batch_err}")
-                        finally:
-                            batch_docs = [] # GC RAM immediately
-                            time.sleep(1.0) # Conservative API spacing
+                for page in pages:
+                    try:
+                        batch_docs.append(page)
+                        p_count += 1
+                        processing_stats["processed_pages"] += 1
+                        
+                        # Update total pages dynamically if we exceed estimate
+                        if processing_stats["processed_pages"] > processing_stats["total_pages"]:
+                            processing_stats["total_pages"] = processing_stats["processed_pages"] + 50 # Add buffer
+                        
+                        # 15-page micro-batches for a balance of speed and memory safety
+                        if len(batch_docs) >= 15:
+                            _process_batch(batch_docs, p_count, embeddings, splitter)
+                            batch_docs = []
+                            time.sleep(0.5) # Slight pause for API stability
+                    except Exception as page_err:
+                        logger.error(f"Error on page {p_count} in {file_names[i]}: {page_err}")
+                        error_occurred = True
+                        continue
 
-                # Final Batch
+                # Final Batch for this file
                 if batch_docs:
-                    chunks = splitter.split_documents(batch_docs)
-                    if vectorstore is None:
-                        vectorstore = FAISS.from_documents(chunks, embeddings)
-                    else:
-                        vectorstore.add_documents(chunks)
-                    
-                    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
-                    rag_chain = build_rag_chain()
-                    
-                    if pinecone_vectorstore:
-                        try:
-                            pinecone_vectorstore.add_documents(chunks)
-                            pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
-                            pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
-                        except Exception as pc_err:
-                            logger.error(f"Final Pinecone Sync Error: {pc_err}")
-
-                # Ensure total pages matches reality if we finished
-                processing_stats["total_pages"] = processing_stats["processed_pages"]
+                    _process_batch(batch_docs, p_count, embeddings, splitter)
+                    batch_docs = []
 
             except Exception as e:
                 logger.error(f"Error reading PDF {temp_path}: {e}")
+                error_occurred = True
             finally:
                 if os.path.exists(temp_path):
                     try: os.remove(temp_path)
                     except: pass
 
+        # Final Reconciliation
         if vectorstore:
             vectorstore.save_local("faiss_index")
-            logger.info("✓ Neural Link Finalized.")
+            logger.info("✓ Final neural map saved to disk.")
+            
+        processing_stats["total_pages"] = processing_stats["processed_pages"]
+        if error_occurred:
+            logger.warning("Ingestion finished with some non-fatal errors.")
             
     except Exception as e:
         logger.error(f"Global Ingestion Error: {e}")
     finally:
         is_processing = False
-        # Set processed to total to ensure 100% on success, else keep actual progress
-        if processing_stats["processed_pages"] > 0:
-            processing_stats["total_pages"] = processing_stats["processed_pages"]
         processing_stats["current_file"] = "Completed"
+
+def _process_batch(batch_docs, p_count, embeddings, splitter):
+    """Helper to process a batch of documents."""
+    global vectorstore, retriever, rag_chain
+    global pinecone_vectorstore, pinecone_retriever, pinecone_rag_chain
+
+    try:
+        logger.info(f"Digitizing Page Batch ending at {p_count}...")
+        chunks = splitter.split_documents(batch_docs)
+        
+        if vectorstore is None:
+            vectorstore = FAISS.from_documents(chunks, embeddings)
+        else:
+            vectorstore.add_documents(chunks)
+        
+        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+        rag_chain = build_rag_chain()
+        
+        if pinecone_vectorstore:
+            try:
+                pinecone_vectorstore.add_documents(chunks)
+                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+            except Exception as pc_err:
+                logger.error(f"Pinecone Sync Error: {pc_err}")
+    except Exception as batch_err:
+        logger.error(f"Batch Processing Error: {batch_err}")
+        # We don't re-raise here to keep the background thread alive
 
 # ---------------- ENDPOINTS ----------------
 @app.post("/upload-pdf/")
