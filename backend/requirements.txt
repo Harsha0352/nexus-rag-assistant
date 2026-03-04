@@ -24,3 +24,4 @@ gTTS
 soundfile
 pinecone-client
 langchain-pinecone
+pymupdf

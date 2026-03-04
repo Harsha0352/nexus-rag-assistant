@@ -384,6 +384,19 @@
             <button class="mode-btn active" id="textModeBtn" onclick="switchMode('text')">TERMINAL</button>
             <button class="mode-btn" id="voiceModeBtn" onclick="switchMode('voice')">NEURAL LINK</button>
         </div>
+        <div id="ragStatusHeader"
+            style="display: flex; gap: 15px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;">
+            <div id="statusFAISS" style="display: flex; align-items: center; gap: 6px; color: var(--text-dim);">
+                <span class="status-dot"
+                    style="width: 8px; height: 8px; border-radius: 50%; background: #4b5563;"></span> FAISS: <span
+                    class="status-val">Offline</span>
+            </div>
+            <div id="statusPinecone" style="display: flex; align-items: center; gap: 6px; color: var(--text-dim);">
+                <span class="status-dot"
+                    style="width: 8px; height: 8px; border-radius: 50%; background: #4b5563;"></span> PINECONE: <span
+                    class="status-val">Offline</span>
+            </div>
+        </div>
     </div>
 
     <div class="hero">
@@ -505,6 +518,10 @@
                     progressPercent.textContent = `${data.progress_percentage}%`;
                     progressBar.style.width = `${data.progress_percentage}%`;
 
+                    // Update RAG status indicators
+                    updateRAGIndicator('statusFAISS', data.faiss_status);
+                    updateRAGIndicator('statusPinecone', data.pinecone_status);
+
                     if (data.stats.current_file && data.stats.current_file !== 'Completed') {
                         progressFile.textContent = `Processing: ${data.stats.current_file}`;
                         progressStatus.textContent = 'Neural Mapping...';
@@ -514,7 +531,6 @@
                         clearInterval(pollInterval);
                         pollInterval = null;
 
-                        // Hide after a delay
                         setTimeout(() => {
                             // progressContainer.style.display = 'none';
                         }, 5000);
@@ -529,6 +545,39 @@
                 }
             }, 2000);
         }
+
+        function updateRAGIndicator(id, status) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const dot = el.querySelector('.status-dot');
+            const val = el.querySelector('.status-val');
+
+            val.textContent = status;
+
+            if (status === "Online") {
+                dot.style.background = "var(--accent-aurora)";
+                el.style.color = "var(--text-pure)";
+            } else if (status.includes("Error") || status.includes("failed")) {
+                dot.style.background = "#ef4444";
+                el.style.color = "#ef4444";
+            } else {
+                dot.style.background = "#eab308"; // Warning/Waiting
+                el.style.color = "var(--text-dim)";
+            }
+        }
+
+        // Initial health check
+        async function checkInitialHealth() {
+            try {
+                const res = await fetch('/status');
+                if (res.ok) {
+                    const data = await res.json();
+                    updateRAGIndicator('statusFAISS', data.faiss_status);
+                    updateRAGIndicator('statusPinecone', data.pinecone_status);
+                }
+            } catch (e) { }
+        }
+        checkInitialHealth();
 
         // Initialize Speech Recognition
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;

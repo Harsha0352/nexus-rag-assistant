@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Try robust imports
 try:
-    from langchain_community.document_loaders import PyPDFLoader
+    from langchain_community.document_loaders import PyPDFLoader, PyMuPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.vectorstores import FAISS
     from langchain_huggingface import (
@@ -39,7 +39,7 @@ try:
     from langchain_pinecone import PineconeVectorStore
 except ImportError as e:
     logger.error(f"Import Error: {e}")
-    from langchain_community.document_loaders import PyPDFLoader
+    from langchain_community.document_loaders import PyPDFLoader, PyMuPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.vectorstores import FAISS
 
@@ -58,10 +58,12 @@ pinecone_retriever = None
 pinecone_rag_chain = None
 is_processing = False  # Track background PDF synchronization
 processing_stats = {"total_pages": 0, "processed_pages": 0, "current_file": ""}
+pinecone_status = "Waiting for initialization" # Detailed status for UI
+faiss_status = "Not loaded"
 
 # ---------------- STARTUP ----------------
 def load_models():
-    global llm, embeddings, vectorstore, retriever, rag_chain
+    global llm, embeddings, vectorstore, retriever, rag_chain, faiss_status, pinecone_status
 
     logger.info("Initializing AI models in background...")
     
@@ -90,7 +92,7 @@ def load_models():
         
         if pinecone_api_key and pinecone_index_name:
             try:
-                global pc, pinecone_vectorstore, pinecone_retriever, pinecone_rag_chain
+                global pc, pinecone_vectorstore, pinecone_retriever, pinecone_rag_chain, pinecone_status
                 pc = Pinecone(api_key=pinecone_api_key)
                 
                 # Check if index exists, else create it
@@ -117,11 +119,18 @@ def load_models():
                     embedding=embeddings,
                     pinecone_api_key=pinecone_api_key
                 )
-                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+                pinecone_retriever = pinecone_vectorstore.as_retriever(
+                    search_type="mmr", 
+                    search_kwargs={"k": 8, "fetch_k": 20, "lambda_mult": 0.5}
+                )
                 pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
+                pinecone_status = "Online"
                 logger.info("✓ Pinecone initialized and RAG chain built.")
             except Exception as e:
+                pinecone_status = f"Initialization failed: {str(e)}"
                 logger.error(f"Pinecone initialization failed: {e}")
+        else:
+            pinecone_status = "Missing Config (Check .env)"
 
         # Optional: Load previous index if exists
         if os.path.exists("faiss_index"):
@@ -131,13 +140,20 @@ def load_models():
                     embeddings,
                     allow_dangerous_deserialization=True
                 )
-                # FACTUAL RESCUE: Switch to similarity search for better factual recall in clinical STGs
+                # FACTUAL RESCUE: Switch to MMR search for better factual recall in clinical STGs
                 # Optimization: Slightly reduced k for large PDFs to prevent context overflow or timeouts
-                retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+                retriever = vectorstore.as_retriever(
+                    search_type="mmr", 
+                    search_kwargs={"k": 8, "fetch_k": 20}
+                )
                 rag_chain = build_rag_chain()
+                faiss_status = "Online"
                 logger.info("✓ Previous FAISS index recovered (Similarity Search active).")
             except Exception as e:
+                faiss_status = f"Error: {str(e)}"
                 logger.warning(f"Could not load old index: {e}")
+        else:
+            faiss_status = "Empty (Wait for upload)"
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
 
@@ -176,8 +192,12 @@ async def get_frontend():
 def format_docs(docs):
     if not docs:
         return "No relevant context found."
-    # Include clear page numbering for medical reference accuracy
-    return "\n\n".join(f"[Source: PDF Page {doc.metadata.get('page', 'unknown')}]\n{doc.page_content.strip()}" for doc in docs)
+    formatted = []
+    for doc in docs:
+        p_num = doc.metadata.get('page', 'unknown')
+        content = doc.page_content.strip()
+        formatted.append(f"--- DOCUMENT SEGMENT (Page {p_num}) ---\n{content}")
+    return "\n\n".join(formatted)
 
 def build_rag_chain():
     global retriever, llm
@@ -185,20 +205,22 @@ def build_rag_chain():
         return None
     
     prompt = ChatPromptTemplate.from_template(
-        """You are an advanced medical assistant. Your task is to provide precise answers based ONLY on the provided context.
+        """System: You are a professional medical assistant providing information from Standard Treatment Guidelines.
+Use the following pieces of retrieved context to answer the question. 
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
 Context:
 {context}
 
-Question:
-{question}
+Question: {question}
 
 Instructions:
-1. If the answer is in the context, provide it clearly and mention the source page found in the context.
-2. If the answer is not in the context, state: "The provided medical guidelines do not contain information on this specific topic."
-3. Do not use outside knowledge. Rely exclusively on the provided medical text.
+1. Provide a detailed answer based on the context. 
+2. ALWAYS cite the Page Number (e.g., "Source: Page 107") for every fact you state.
+3. Be concise and professional.
+4. If the topic is mentioned but details are missing, mention where it is listed (Page X).
 
-Answer based on specific medical guidelines:"""
+Answer:"""
     )
 
     return (
@@ -217,20 +239,22 @@ def build_rag_chain_custom(custom_retriever):
         return None
     
     prompt = ChatPromptTemplate.from_template(
-        """You are an advanced medical assistant. Your task is to provide precise answers based ONLY on the provided context.
+        """System: You are a professional medical assistant providing information from Standard Treatment Guidelines.
+Use the following pieces of retrieved context to answer the question. 
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
 Context:
 {context}
 
-Question:
-{question}
+Question: {question}
 
 Instructions:
-1. If the answer is in the context, provide it clearly and mention the source page found in the context.
-2. If the answer is not in the context, state: "The provided medical guidelines do not contain information on this specific topic."
-3. Do not use outside knowledge. Rely exclusively on the provided medical text.
+1. Provide a detailed answer based on the context. 
+2. ALWAYS cite the Page Number (e.g., "Source: Page 107") for every fact you state.
+3. Be concise and professional.
+4. If the topic is mentioned but details are missing, mention where it is listed (Page X).
 
-Answer based on specific medical guidelines:"""
+Answer:"""
     )
 
     return (
@@ -306,10 +330,10 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
         return
 
     try:
-        # FACTUAL RESCUE: Smaller, cleaner chunks for clinical accuracy
+        # FACTUAL RESCUE: Larger chunks with significant overlap for clinical context preservation
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=600, 
-            chunk_overlap=50,
+            chunk_size=1000, 
+            chunk_overlap=200,
             separators=["\n\n", "\n", ". ", " ", ""]
         )
         
@@ -325,37 +349,38 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
                 if processing_stats["total_pages"] == 0:
                     processing_stats["total_pages"] = 300 # Initial estimate
                 
-                loader = PyPDFLoader(temp_path)
+                loader = PyMuPDFLoader(temp_path)
                 batch_docs = []
                 p_count = 0
                 
-                # Robust Page iteration
+                # Stable Page iteration
                 try:
-                    pages = loader.lazy_load()
-                except Exception as load_err:
-                    logger.error(f"Failed to initialize loader for {file_names[i]}: {load_err}")
-                    error_occurred = True
-                    continue
+                    # PyMuPDFLoader doesn't have a direct count without loading, 
+                    # so we load once to get the count for accurate progress.
+                    all_pages = loader.load()
+                    processing_stats["total_pages"] = len(all_pages)
+                    
+                    for page in all_pages:
+                        try:
+                            batch_docs.append(page)
+                            p_count += 1
+                            processing_stats["processed_pages"] += 1
+                            
+                            if p_count % 10 == 0:
+                                logger.info(f"Digitized {p_count} pages of {file_names[i]}...")
 
-                for page in pages:
-                    try:
-                        batch_docs.append(page)
-                        p_count += 1
-                        processing_stats["processed_pages"] += 1
-                        
-                        # Update total pages dynamically if we exceed estimate
-                        if processing_stats["processed_pages"] > processing_stats["total_pages"]:
-                            processing_stats["total_pages"] = processing_stats["processed_pages"] + 50 # Add buffer
-                        
-                        # 15-page micro-batches for a balance of speed and memory safety
-                        if len(batch_docs) >= 15:
-                            _process_batch(batch_docs, p_count, embeddings, splitter)
-                            batch_docs = []
-                            time.sleep(1.5) # Increased pause for API stability/rate-limit prevention
-                    except Exception as page_err:
-                        logger.error(f"Error on page {p_count} in {file_names[i]}: {page_err}")
-                        error_occurred = True
-                        continue
+                            # 15-page micro-batches for a balance of speed and memory safety
+                            if len(batch_docs) >= 15:
+                                _process_batch(batch_docs, p_count, embeddings, splitter)
+                                batch_docs = []
+                                time.sleep(0.5) 
+                        except Exception as page_err:
+                            logger.error(f"Error on page {p_count} in {file_names[i]}: {page_err}")
+                            error_occurred = True
+                            continue
+                except Exception as iter_err:
+                    logger.error(f"Critical Iterator Error in {file_names[i]} at page {p_count}: {iter_err}")
+                    error_occurred = True
 
                 # Final Batch for this file
                 if batch_docs:
@@ -387,25 +412,54 @@ def process_pdf_background(temp_paths: List[str], file_names: List[str]):
 
 def _process_batch(batch_docs, p_count, embeddings, splitter):
     """Helper to process a batch of documents."""
-    global vectorstore, retriever, rag_chain
+    global vectorstore, retriever, rag_chain, faiss_status
     global pinecone_vectorstore, pinecone_retriever, pinecone_rag_chain
 
     try:
         logger.info(f"Digitizing Page Batch ending at {p_count}...")
         chunks = splitter.split_documents(batch_docs)
         
-        if vectorstore is None:
-            vectorstore = FAISS.from_documents(chunks, embeddings)
-        else:
-            vectorstore.add_documents(chunks)
-        
-        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+        # Define a retry wrapper for vector store operations
+        def add_with_retry(vs, docs, embeddings_ref):
+            for attempt in range(3):
+                try:
+                    if vs is None:
+                        return FAISS.from_documents(docs, embeddings_ref)
+                    vs.add_documents(docs)
+                    return vs
+                except Exception as e:
+                    if "429" in str(e) and attempt < 2:
+                        delay = 5 * (2 ** attempt)
+                        logger.warning(f"Rate limit in ingestion. Retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    raise e
+
+        vectorstore = add_with_retry(vectorstore, chunks, embeddings)
+        retriever = vectorstore.as_retriever(
+            search_type="mmr", 
+            search_kwargs={"k": 8, "fetch_k": 20}
+        )
         rag_chain = build_rag_chain()
+        faiss_status = "Online"
         
         if pinecone_vectorstore:
             try:
-                pinecone_vectorstore.add_documents(chunks)
-                pinecone_retriever = pinecone_vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+                # Pinecone also needs retries
+                for attempt in range(3):
+                    try:
+                        pinecone_vectorstore.add_documents(chunks)
+                        break
+                    except Exception as e:
+                        if "429" in str(e) and attempt < 2:
+                            time.sleep(5)
+                            continue
+                        raise e
+                
+                pinecone_retriever = pinecone_vectorstore.as_retriever(
+                    search_type="mmr", 
+                    search_kwargs={"k": 8, "fetch_k": 20}
+                )
                 pinecone_rag_chain = build_rag_chain_custom(pinecone_retriever)
             except Exception as pc_err:
                 logger.error(f"Pinecone Sync Error: {pc_err}")
@@ -452,7 +506,24 @@ async def get_status():
     return {
         "is_processing": is_processing,
         "stats": processing_stats,
-        "progress_percentage": progress
+        "progress_percentage": progress,
+        "faiss_status": faiss_status,
+        "pinecone_status": pinecone_status
+    }
+
+@app.get("/health")
+async def health_check():
+    """Detailed health check for RAG systems."""
+    return {
+        "faiss": {
+            "status": faiss_status,
+            "ready": rag_chain is not None
+        },
+        "pinecone": {
+            "status": pinecone_status,
+            "ready": pinecone_rag_chain is not None,
+            "index_name": os.getenv("PINECONE_INDEX_NAME")
+        }
     }
 
 @app.post("/ask/")
@@ -475,7 +546,7 @@ async def ask_question(question: str = Form(...)):
             prefix = "[AI Sync in Progress: Only partially digitized results available]\n\n"
 
         # Compare results
-        faiss_response = "FAISS not initialized"
+        faiss_response = faiss_status if not rag_chain else "Processing..."
         if rag_chain:
             try:
                 faiss_response = invoke_with_retry(rag_chain, {"question": question})
@@ -483,7 +554,7 @@ async def ask_question(question: str = Form(...)):
                 logger.error(f"FAISS Invoke Error: {e}")
                 faiss_response = f"Error during FAISS retrieval: {str(e)}"
         
-        pinecone_response = "Pinecone not initialized"
+        pinecone_response = pinecone_status if not pinecone_rag_chain else "Processing..."
         if pinecone_rag_chain:
             try:
                 pinecone_response = invoke_with_retry(pinecone_rag_chain, {"question": question})
@@ -491,7 +562,7 @@ async def ask_question(question: str = Form(...)):
                 logger.error(f"Pinecone Invoke Error: {e}")
                 pinecone_response = f"Error during Pinecone retrieval: {str(e)}"
 
-        final_answer = f"{prefix}**[FAISS MODEL ANSWER]**\n{faiss_response}\n\n---\n\n**[PINECONE MODEL ANSWER]**\n{pinecone_response}"
+        final_answer = f"{prefix}**[FAISS MODEL ANSWER] ({faiss_status})**\n{faiss_response}\n\n---\n\n**[PINECONE MODEL ANSWER] ({pinecone_status})**\n{pinecone_response}"
         
         return {"answer": final_answer}
     except Exception as e:

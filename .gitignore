@@ -1,0 +1,19 @@
+# Environment variables
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ingestion/Logs
+backend/server.log
+backend/server_utf8.log
+backend/test_loader.py
+backend/faiss_index/
+backend/books/
+
+# OS
+.DS_Store
+Thumbs.db
